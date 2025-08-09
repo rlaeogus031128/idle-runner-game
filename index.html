@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
-<title>Idle Runner — Stage, Rebirth, Debug</title>
+<title>Idle Runner — Stage, Rebirth, Dash</title>
 <style>
   :root{
     --panel-w: 320px;
@@ -48,7 +48,6 @@
   <aside class="panel">
     <div class="hudline">
       <h1>Idle Runner</h1>
-      <button id="panelToggle" class="pill">패널 접기/펼치기</button>
     </div>
     <div class="hudline">
       <div>스테이지: <span id="stage" class="mono">1</span><span id="stageTag" class="tag" style="display:none">보스</span></div>
@@ -60,9 +59,9 @@
     </div>
     <div class="row" style="margin-top:6px">
       <label class="switch"><input type="checkbox" id="bossToggle" checked> 보스 등장</label>
-      <label class="switch"><input type="checkbox" id="enemyCrawlToggle"> 적 미세 접근(디버그)</label>
+      <!-- 적 미세 접근(디버그) 토글 삭제됨 -->
     </div>
-    <div class="fine">적은 화면 밖 오른쪽에서 생성됩니다. 조우 시 정지 후 한쪽이 쓰러질 때까지 전투합니다.</div>
+    <div class="fine">적은 화면 밖 오른쪽에서 생성됩니다. 스페이스로 1초 대시(쿨타임 2초).</div>
 
     <h2 style="font-size:14px;margin:10px 0 4px;">플레이어</h2>
     <div>HP <span class="mono" id="phpLabel"></span>
@@ -105,7 +104,7 @@
       <button id="resetBtn">리셋</button>
       <button id="rebirthBtn" class="rebirth" disabled>환생 (스테이지 10부터)</button>
     </div>
-    <div class="fine">단축키: P(일시정지) / S(저장) / L(불러오기)</div>
+    <div class="fine">단축키: P(일시정지) / S(저장) / L(불러오기) / Space(대시)</div>
   </aside>
 </div>
 
@@ -117,13 +116,15 @@
   // ---- Config / Caps ----
   const CAPS = { ASPD: 2.0, MSPD: 250 }; // 레이어1 캡
   const RESPAWN_MS = 3000;
+  const DASH = { DUR: 1000, CD: 2000 }; // ms
 
   // ---- Game State ----
   const state = {
     paused:false, cameraX:0, inCombat:false,
     lastTime:performance.now(),
     spawnCooldown:0, needSpawn:true, nextIsBoss:false,
-    dead:false, respawnAt:0
+    dead:false, respawnAt:0,
+    dashActive:false, dashUntil:0, dashCdUntil:0
   };
 
   // ---- Progression & Toggles ----
@@ -131,7 +132,7 @@
   function layer2Mult(){ return Math.pow(2, prog.rebirths); }
 
   // ---- Player (base + levels) ----
-  const basePlayer = { atk:10, def:3, aspd:1.6, maxHp:70, moveSpeed:140 };
+  const basePlayer = { atk:10, def:3, aspd:1.0, maxHp:70, moveSpeed:140 }; // 시작 공속 1.0로 조정
   const player = { x:40, y:380, w:32, h:42, color:'#5ec8ff',
     atk:0, def:0, aspd:0, maxHp:0, hp:0, moveSpeed:0, nextAtk:0 };
 
@@ -144,7 +145,7 @@
   // ---- Enemy scaling (완화 버전) ----
   function randBetween(a,b){ return a + Math.random()*(b-a); }
   function stageScale(stage){
-    // 이전보다 완화: 스탯(1+0.16s)^1.08, 보상(1+0.15s)^1.04
+    // 스탯/보상 증가율
     const s = Math.pow(1 + 0.16*stage, 1.08);
     const r = Math.pow(1 + 0.15*stage, 1.04);
     return {stat:s, reward:r};
@@ -155,9 +156,11 @@
 
   function makeEnemy(isBoss=false){
     const sc = stageScale(prog.stage), b = prog.stage;
-    const baseHp = 28 + b*8.5 * sc.stat;
+    // 시작 체력 50 언저리로 조정
+    let baseHp = 42 + b*6.5 * sc.stat;
     const baseAtk = 6  + b*2.2 * sc.stat;
-    const baseDef = 1  + Math.floor(b*0.5 * sc.stat);
+    // 시작 방어력 0 보장(1스테이지), 이후 선형 증가
+    let baseDef = Math.max(0, Math.round((b-1)*0.5 * sc.stat));
     const baseAspd = 1.0 + Math.min(1.5, b*0.05);
     const baseReward = (6 + b*3.0) * sc.reward;
 
@@ -224,8 +227,7 @@
     upGoldMul: $('upGoldMul'), goldMulLabel: $('goldMulLabel'),
     pauseBtn: $('pauseBtn'), saveBtn:$('saveBtn'), loadBtn:$('loadBtn'), resetBtn:$('resetBtn'),
     rebirthBtn:$('rebirthBtn'),
-    bossToggle:$('bossToggle'), enemyCrawlToggle:$('enemyCrawlToggle'),
-    panelToggle:$('panelToggle'),
+    bossToggle:$('bossToggle')
   };
   function fmt(n){ return Number.isInteger(n)? n : n.toFixed(2); }
 
@@ -240,12 +242,12 @@
     el.pdef.textContent = `현재 ${player.def}  | 레벨 ${economy.level.def}`;
     el.paspd.textContent = `현재 ${fmt(player.aspd)} /s | 레벨 ${economy.level.aspd} (캡 ${CAPS.ASPD}/s)`;
     el.php.textContent  = `현재 최대 ${player.maxHp}  | 레벨 ${economy.level.hp}`;
-    el.pspd.textContent = `현재 ${Math.round(player.moveSpeed)} px/s | 레벨 ${economy.level.mspd} (캡 ${CAPS.MSPD}px/s)`;
+    el.pspd.textContent = `현재 ${Math.round(player.moveSpeed)} px/s | 레벨 ${economomy?.level?.mspd ?? economy.level.mspd} (캡 ${CAPS.MSPD}px/s)`;
 
     el.phpLabel.textContent = `${Math.max(0, Math.ceil(player.hp))}/${player.maxHp}`;
     if(enemy){
       el.ehpLabel.textContent = `${Math.max(0, Math.ceil(enemy.hp))}/${enemy.maxHp}`;
-      el.ehpBar.style.width = `${Math.max(0, (enemy.hp/enemy.maxHp)*100)}%`;
+      el.ehpBar.style.width = `${Math.max(0, (enemy.hp/ enemy.maxHp)*100)}%`;
       el.eatk.textContent = enemy.atk; el.edef.textContent = enemy.def;
       el.easpd.textContent = `${fmt(enemy.aspd)} /s`; el.erew.textContent  = `${Math.round(enemy.reward * goldMul())} 골드`;
     }else{
@@ -313,13 +315,14 @@
     enemy = null; state.needSpawn = true; state.spawnCooldown = 0.5;
     syncUI();
   }
-  function saveAuto(){ localStorage.setItem('idleRunnerSave_v3', packSave()); }
+  function saveAuto(){ localStorage.setItem('idleRunnerSave_v4', packSave()); }
   function saveManual(){ saveAuto(); flash('저장 완료'); }
   function loadManual(){
-    const raw = localStorage.getItem('idleRunnerSave_v3') || localStorage.getItem('idleRunnerSave_v2') || localStorage.getItem('idleRunnerSave');
+    const raw = localStorage.getItem('idleRunnerSave_v4') || localStorage.getItem('idleRunnerSave_v3') || localStorage.getItem('idleRunnerSave_v2') || localStorage.getItem('idleRunnerSave');
     if(raw){ try{ applySave(JSON.parse(raw)); flash('불러오기 완료'); }catch{} }
   }
   function resetAll(){
+    localStorage.removeItem('idleRunnerSave_v4');
     localStorage.removeItem('idleRunnerSave_v3');
     localStorage.removeItem('idleRunnerSave_v2');
     localStorage.removeItem('idleRunnerSave');
@@ -350,19 +353,24 @@
   $('resetBtn').onclick = resetAll;
   $('rebirthBtn').onclick = doRebirth;
   el.bossToggle.onchange = (e)=>{ prog.bossEnabled = e.target.checked; saveAuto(); flash(`보스 ${prog.bossEnabled?'ON':'OFF'}`); };
-  el.enemyCrawlToggle.onchange = ()=>{ flash(el.enemyCrawlToggle.checked ? '적 접근: 느리게 ON' : '적 접근: 정지'); };
-  el.panelToggle.onclick = ()=>{
-    const p = document.querySelector('.panel');
-    if(p.style.display==='none'){ p.style.display='block'; } else { p.style.display='none'; }
-  };
 
   window.addEventListener('keydown', (e)=>{
     if(e.key==='p' || e.key==='P'){ state.paused = !state.paused; syncUI(); }
     if(e.key==='s' || e.key==='S'){ saveManual(); }
     if(e.key==='l' || e.key==='L'){ loadManual(); }
+    // 대시(스페이스)
+    if((e.code === 'Space' || e.key === ' ') && !state.paused && !state.dead){
+      const now = performance.now();
+      if(!state.dashActive && now >= state.dashCdUntil){
+        state.dashActive = true;
+        state.dashUntil = now + DASH.DUR;
+        flash('대시!');
+      }
+      e.preventDefault();
+    }
   });
   // 클릭하면 즉시 부활
-  cv.addEventListener('click', ()=>{ if(state.dead){ respawnNow(); }});
+  cv.addEventListener('click', ()=>{ if(state.dead){ respawnNow(performance.now()); }});
 
   // ---- Toast ----
   let toastTimer=0, toastMsg='';
@@ -392,10 +400,18 @@
 
   // ---- Spawning / Respawn ----
   function requestSpawn(){ state.spawnCooldown = randBetween(0.8, 1.6); state.needSpawn = true; }
-  function respawnNow(){
+  function respawnNow(now){
     if(!state.dead) return;
     state.dead=false; player.hp=player.maxHp;
-    enemy=null; requestSpawn(); flash('부활!');
+    // 진행 중이던 전투 유지: 적이 존재하면 즉시 전투 재개
+    if(enemy){
+      state.inCombat = true;
+      player.nextAtk = now + 120;
+      enemy.nextAtk = now + 220;
+    }else{
+      requestSpawn();
+    }
+    flash('부활!');
   }
 
   // ---- Main Loop ----
@@ -408,13 +424,19 @@
   function update(dt, ts){
     // 사망 상태
     if(state.dead){
-      if(ts >= state.respawnAt){ respawnNow(); }
+      if(ts >= state.respawnAt){ respawnNow(ts); }
       // 폭발 업데이트
-      for(let i=explosions.length-1;i>=0;i--){
+      for(let i=explosions.length-1;i>=0;i++){
         const p = explosions[i]; p.life -= dt; p.x += p.vx*dt; p.y += p.vy*dt; p.vy += 300*dt;
         if(p.life<=0) explosions.splice(i,1);
       }
       syncUI(); return;
+    }
+
+    // 대시 상태 갱신
+    if(state.dashActive && ts >= state.dashUntil){
+      state.dashActive = false;
+      state.dashCdUntil = ts + DASH.CD;
     }
 
     // 스폰 타이머
@@ -429,13 +451,8 @@
 
     // 이동
     if(!state.inCombat){
-      player.x += player.moveSpeed * dt;
-
-      // 디버그 토글이 켜졌을 때만 아주 느리게 접근 (기본은 접근 0)
-      if(enemy && el.enemyCrawlToggle.checked){
-        const factor = 0.15; // 플레이어 이속의 15% 속도로만 이동
-        enemy.x -= (player.moveSpeed * factor) * dt;
-      }
+      const dashMult = state.dashActive ? 2 : 1; // 캡과 무관하게 2배 이동
+      player.x += player.moveSpeed * dashMult * dt;
 
       // 카메라
       const targetCam = player.x - 200; state.cameraX += (targetCam - state.cameraX) * 0.1;
@@ -472,22 +489,17 @@
         }
         requestSpawn();
       }else if(player.hp <= 0){
-        // 사망 처리: 일반몹이면 제자리, 보스면 시작지점
-        const fightingBoss = enemy.isBoss;
-
-        // 플레이어 사망 이펙트(색상은 플레이어 색)
+        // 사망 처리: 전투 유지(보스/일반 공통)
         spawnExplosion(player.x + player.w/2, player.y + player.h/2, '#5ec8ff');
 
         player.hp = 0; state.inCombat = false; state.dead = true; state.respawnAt = ts + RESPAWN_MS;
-        prog.killsThisStage = 0;
-        enemy = fightingBoss ? null : enemy; // 일반몹이면 전투 유지(제자리 부활)
-        if(fightingBoss){ player.x = 40; state.cameraX = 0; }
-        flash(fightingBoss ? '보스에게 사망! 3초 후 시작 지점에서 부활' : '사망! 3초 후 제자리 부활 (클릭 시 즉시)');
+        // 진행 현황 유지: killsThisStage, 스테이지 유지
+        flash('사망! 3초 후 부활 (클릭 시 즉시)');
       }
     }
 
     // 폭발 업데이트
-    for(let i=explosions.length-1;i>=0;i--){
+    for(let i=explosions.length-1;i>=0;i++){
       const p = explosions[i]; p.life -= dt; p.x += p.vx*dt; p.y += p.vy*dt; p.vy += 300*dt;
       if(p.life<=0) explosions.splice(i,1);
     }
@@ -575,6 +587,22 @@
       ctx.fillStyle = '#fff'; ctx.font = '16px system-ui, sans-serif';
       const msg = `사망! ${remain.toFixed(1)}초 후 부활 (클릭 시 즉시)`; const tw = ctx.measureText(msg).width;
       ctx.fillText(msg, (cv.width - tw)/2, 80);
+    }
+
+    // 대시 게이지 바 (하단)
+    {
+      const now = ts;
+      const ready = !state.dashActive && now >= state.dashCdUntil;
+      const ratio = state.dashActive ? 1 : (ready ? 1 : Math.max(0, 1 - (state.dashCdUntil - now)/DASH.CD));
+      const bw = cv.width - 40, bh = 10, bx = 20, by = cv.height - 16;
+      ctx.fillStyle = '#1a2130'; ctx.fillRect(bx, by, bw, bh);
+      ctx.fillStyle = ready ? '#6cf' : '#44607a';
+      ctx.fillRect(bx, by, bw * Math.min(1, ratio), bh);
+      ctx.font = '12px system-ui, sans-serif';
+      ctx.fillStyle = '#d7eaff';
+      let text = state.dashActive ? '대시 중' : (ready ? '대시 준비됨 (Space)' : `대시 쿨다운 ${(Math.max(0,(state.dashCdUntil - now))/1000).toFixed(1)}s`);
+      const tw = ctx.measureText(text).width;
+      ctx.fillText(text, (cv.width - tw)/2, by - 4);
     }
 
     // 토스트
