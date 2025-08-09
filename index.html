@@ -1,0 +1,505 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Idle Runner — Stage, Rebirth, Debug</title>
+<style>
+  :root{
+    --panel-w: 320px;
+    --bg:#0e0f12; --fg:#e6e6e6; --accent:#6cf; --muted:#9aa0a6;
+  }
+  html,body{height:100%; margin:0; background:var(--bg); color:var(--fg); font-family:system-ui, -apple-system, Segoe UI, Roboto, Noto Sans KR, sans-serif;}
+  .wrap{display:flex; height:100vh; overflow:hidden;}
+  canvas{flex:1; background:linear-gradient(#1b1f27,#101319);}
+  .panel{width:var(--panel-w); padding:12px 12px 16px; box-sizing:border-box; border-left:1px solid #1f232b; background:#14161c;}
+  h1{font-size:18px; margin:0 0 6px;}
+  .row{display:flex; gap:8px; flex-wrap:wrap; margin:8px 0;}
+  .stat{flex:1 1 46%; background:#191c24; padding:8px; border-radius:8px; font-size:12px; line-height:1.3;}
+  .stat b{display:block; font-size:12px; color:#cde6ff;}
+  button, .toggle{cursor:pointer; border:none; padding:8px 10px; border-radius:8px; background:#232734; color:#e9f2ff; font-size:12px;}
+  button:disabled{opacity:.45; cursor:not-allowed;}
+  .controls{display:flex; gap:8px; flex-wrap:wrap; margin-top:6px;}
+  .fine{color:var(--muted); font-size:12px; margin-top:6px;}
+  .bar{height:8px; background:#2a2f3f; border-radius:999px; overflow:hidden; margin:6px 0 4px;}
+  .bar>span{display:block; height:100%;}
+  .hp{background:#ff5d73;}
+  .ehp{background:#ffae46;}
+  .gold{color:#ffd76a; font-weight:700;}
+  .mono{font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;}
+  .tag{display:inline-block; padding:2px 8px; border-radius:999px; font-size:11px; background:#203049; color:#cfe8ff; margin-left:6px;}
+  .tag.boss{background:#492030; color:#ffd0d6;}
+  .rebirth{background:#2a2f1f; color:#e8ffd4; border:1px solid #324a2c;}
+  .switch {display:inline-flex; align-items:center; gap:6px; font-size:12px;}
+  .switch input {accent-color:#5ec8ff; width:16px; height:16px;}
+  .hudline{display:flex; align-items:center; justify-content:space-between; gap:8px; margin:6px 0;}
+  .pill{font-size:11px; padding:2px 8px; border:1px solid #2a3240; border-radius:999px; color:#cfe8ff; background:#192131;}
+  .debug{background:#3a2b1c; color:#ffe0b0; border:1px solid #5a4022;}
+  /* 모바일/좁은 화면: 위(전투) 60vh, 아래(패널) 40vh */
+  @media (max-width: 900px) {
+    .wrap{flex-direction:column;}
+    canvas{height:60vh; width:100%;}
+    .panel{width:100%; height:40vh; overflow:auto; border-left:none; border-top:1px solid #1f232b;}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <canvas id="game" width="960" height="540"></canvas>
+  <aside class="panel">
+    <div class="hudline">
+      <h1>Idle Runner</h1>
+      <button id="panelToggle" class="pill">패널 접기/펼치기</button>
+    </div>
+    <div class="hudline">
+      <div>스테이지: <span id="stage" class="mono">1</span><span id="stageTag" class="tag" style="display:none">보스</span></div>
+      <div>처치: <span id="kills" class="mono">0</span> / 10</div>
+    </div>
+    <div class="hudline">
+      <div>환생(레이어2): <span id="rebirths" class="mono">0</span></div>
+      <div>골드: <span id="gold" class="gold mono">0</span></div>
+    </div>
+    <div class="row" style="margin-top:6px">
+      <label class="switch"><input type="checkbox" id="bossToggle" checked> 보스 등장</label>
+      <label class="switch"><input type="checkbox" id="enemyCrawlToggle"> 적 미세 접근(디버그)</label>
+      <button id="debugGoldBtn" class="debug" title="디버그: +10,000 골드">+10k 골드</button>
+    </div>
+    <div class="fine">적은 화면 밖 오른쪽에서 생성됩니다. 조우 시 정지 후 한쪽이 쓰러질 때까지 전투합니다.</div>
+
+    <h2 style="font-size:14px;margin:10px 0 4px;">플레이어</h2>
+    <div>HP <span class="mono" id="phpLabel"></span>
+      <div class="bar"><span id="phpBar" class="hp" style="width:100%"></span></div>
+    </div>
+    <div class="row">
+      <div class="stat"><b>공격력</b><span id="patk"></span><br>
+        <button id="upATK"></button></div>
+      <div class="stat"><b>방어력</b><span id="pdef"></span><br>
+        <button id="upDEF"></button></div>
+      <div class="stat"><b>공격속도</b><span id="paspd"></span><br>
+        <button id="upASPD"></button></div>
+      <div class="stat"><b>체력</b><span id="php"></span><br>
+        <button id="upHP"></button></div>
+      <div class="stat" style="flex:1 1 100%"><b>이동속도</b><span id="pspd"></span><br>
+        <button id="upMSPD"></button></div>
+    </div>
+
+    <h2 style="font-size:14px;margin:10px 0 4px;">적</h2>
+    <div>HP <span class="mono" id="ehpLabel"></span>
+      <div class="bar"><span id="ehpBar" class="ehp" style="width:100%"></span></div>
+    </div>
+    <div class="row">
+      <div class="stat"><b>공격력</b><span id="eatk"></span></div>
+      <div class="stat"><b>방어력</b><span id="edef"></span></div>
+      <div class="stat"><b>공격속도</b><span id="easpd"></span></div>
+      <div class="stat"><b>리워드</b><span id="erew"></span></div>
+    </div>
+
+    <h2 style="font-size:14px;margin:10px 0 4px;">업그레이드</h2>
+    <div class="row">
+      <div class="stat"><b>골드 획득량</b><span id="goldMulLabel"></span><br>
+        <button id="upGoldMul"></button></div>
+    </div>
+
+    <div class="controls">
+      <button id="pauseBtn">일시정지(P)</button>
+      <button id="saveBtn">저장(S)</button>
+      <button id="loadBtn">불러오기(L)</button>
+      <button id="resetBtn">리셋</button>
+      <button id="rebirthBtn" class="rebirth" disabled>환생 (스테이지 10부터)</button>
+    </div>
+    <div class="fine">단축키: P(일시정지) / S(저장) / L(불러오기)</div>
+  </aside>
+</div>
+
+<script>
+(() => {
+  const cv = document.getElementById('game');
+  const ctx = cv.getContext('2d');
+
+  // ---- Config / Caps ----
+  const CAPS = { ASPD: 2.0, MSPD: 250 }; // 레이어1 캡
+  const ENEMY_APPROACH_FACTOR = 0; // 기본 0(정지). 디버그 토글 시 0.15 배 등으로 적용
+  const RESPAWN_MS = 3000;
+
+  // ---- Game State ----
+  const state = {
+    paused:false, cameraX:0, inCombat:false,
+    lastTime:performance.now(),
+    spawnCooldown:0, needSpawn:true, nextIsBoss:false,
+    dead:false, respawnAt:0
+  };
+
+  // ---- Progression & Toggles ----
+  const prog = { stage:1, killsThisStage:0, rebirths:0, bossEnabled:true };
+  function layer2Mult(){ return Math.pow(2, prog.rebirths); }
+
+  // ---- Player (base + levels) ----
+  const basePlayer = { atk:10, def:3, aspd:1.6, maxHp:70, moveSpeed:140 };
+  const player = { x:40, y:380, w:32, h:42, color:'#5ec8ff',
+    atk:0, def:0, aspd:0, maxHp:0, hp:0, moveSpeed:0, nextAtk:0 };
+
+  // ---- Economy & Upgrades (Layer1) ----
+  const economy = { gold:0, level:{ atk:1, def:1, aspd:1, hp:1, mspd:1, goldmul:1 } };
+  const baseCost = { atk:20, def:20, aspd:30, hp:25, mspd:25, goldmul:50 };
+  function costOf(key){ const lv=economy.level[key]; return Math.floor(baseCost[key]*Math.pow(1.35, lv-1)); }
+  function goldMul(){ return Math.pow(1.10, (economy.level.goldmul||1)-1); } // +10% 씩 누적
+
+  // ---- Enemy scaling (완화 버전) ----
+  function randBetween(a,b){ return a + Math.random()*(b-a); }
+  function stageScale(stage){
+    // 이전보다 완화: 스탯(1+0.16s)^1.08, 보상(1+0.15s)^1.04
+    const s = Math.pow(1 + 0.16*stage, 1.08);
+    const r = Math.pow(1 + 0.15*stage, 1.04);
+    return {stat:s, reward:r};
+  }
+  function makeEnemy(isBoss=false){
+    const sc = stageScale(prog.stage), b = prog.stage;
+    const baseHp = 28 + b*8.5 * sc.stat;
+    const baseAtk = 6  + b*2.2 * sc.stat;
+    const baseDef = 1  + Math.floor(b*0.5 * sc.stat);
+    const baseAspd = 1.0 + Math.min(1.5, b*0.05);
+    const baseReward = (6 + b*3.0) * sc.reward;
+    const bossMul = isBoss ? 2.4 : 1.0;
+    const hp = Math.round(baseHp * bossMul);
+    const atk = Math.round(baseAtk * bossMul);
+    const def = Math.round(baseDef * (isBoss? 1.7:1.0));
+    const aspd = +(baseAspd * (isBoss? 1.1:1.0)).toFixed(2);
+    const reward = Math.round(baseReward * (isBoss? 3.0:1.0));
+    const spawnGap = isBoss ? randBetween(900,1100) : randBetween(700,950);
+    return { x: player.x + spawnGap, y:390, w:isBoss?44:30, h:isBoss?52:38,
+      color: isBoss? '#ff3c75' : '#ff6b6b',
+      atk, def, aspd, maxHp:hp, hp, nextAtk:0, reward, isBoss };
+  }
+  let enemy = null;
+
+  // ---- Apply base & levels ----
+  function applyBaseToPlayer(){
+    player.atk = Math.round(basePlayer.atk * layer2Mult());
+    player.def = basePlayer.def;
+    player.aspd = Math.min(CAPS.ASPD, basePlayer.aspd);
+    player.maxHp = Math.round(basePlayer.maxHp * layer2Mult());
+    player.moveSpeed = Math.min(CAPS.MSPD, basePlayer.moveSpeed);
+    player.hp = player.maxHp;
+  }
+  function applyLevelUpgrades(){
+    const L = economy.level, la=(L.atk||1)-1, ld=(L.def||1)-1, ls=(L.aspd||1)-1, lh=(L.hp||1)-1, lm=(L.mspd||1)-1;
+    if(la>0) player.atk += 3*la;
+    if(ld>0) player.def += 2*ld;
+    if(ls>0) player.aspd = Math.min(CAPS.ASPD, player.aspd + 0.20*ls);
+    if(lh>0){ const add=15*lh; player.maxHp += add; player.hp = Math.min(player.hp + add, player.maxHp); }
+    if(lm>0) player.moveSpeed = Math.min(CAPS.MSPD, player.moveSpeed + 15*lm);
+  }
+  applyBaseToPlayer();
+
+  // ---- UI Elements ----
+  const $ = id => document.getElementById(id);
+  const el = {
+    stage: $('stage'), stageTag:$('stageTag'), kills:$('kills'), rebirths:$('rebirths'),
+    gold: $('gold'),
+    phpLabel: $('phpLabel'), phpBar:$('phpBar'),
+    ehpLabel: $('ehpLabel'), ehpBar:$('ehpBar'),
+    patk: $('patk'), pdef: $('pdef'), paspd: $('paspd'), php: $('php'), pspd: $('pspd'),
+    eatk: $('eatk'), edef: $('edef'), easpd: $('easpd'), erew: $('erew'),
+    upATK: $('upATK'), upDEF: $('upDEF'), upASPD: $('upASPD'), upHP: $('upHP'), upMSPD: $('upMSPD'),
+    upGoldMul: $('upGoldMul'), goldMulLabel: $('goldMulLabel'),
+    pauseBtn: $('pauseBtn'), saveBtn:$('saveBtn'), loadBtn:$('loadBtn'), resetBtn:$('resetBtn'),
+    rebirthBtn:$('rebirthBtn'),
+    bossToggle:$('bossToggle'), enemyCrawlToggle:$('enemyCrawlToggle'),
+    panelToggle:$('panelToggle'),
+    debugGoldBtn:$('debugGoldBtn')
+  };
+  function fmt(n){ return Number.isInteger(n)? n : n.toFixed(2); }
+
+  function syncUI(){
+    el.stage.textContent = prog.stage;
+    el.kills.textContent = Math.min(10, prog.killsThisStage);
+    el.rebirths.textContent = prog.rebirths;
+    el.stageTag.style.display = enemy && enemy.isBoss ? 'inline-block' : 'none';
+    el.gold.textContent = economy.gold;
+
+    el.patk.textContent = `현재 ${player.atk}  | 레벨 ${economy.level.atk}`;
+    el.pdef.textContent = `현재 ${player.def}  | 레벨 ${economy.level.def}`;
+    el.paspd.textContent = `현재 ${fmt(player.aspd)} /s | 레벨 ${economy.level.aspd} (캡 ${CAPS.ASPD}/s)`;
+    el.php.textContent  = `현재 최대 ${player.maxHp}  | 레벨 ${economy.level.hp}`;
+    el.pspd.textContent = `현재 ${Math.round(player.moveSpeed)} px/s | 레벨 ${economy.level.mspd} (캡 ${CAPS.MSPD}px/s)`;
+
+    el.phpLabel.textContent = `${Math.max(0, Math.ceil(player.hp))}/${player.maxHp}`;
+    if(enemy){
+      el.ehpLabel.textContent = `${Math.max(0, Math.ceil(enemy.hp))}/${enemy.maxHp}`;
+      el.ehpBar.style.width = `${Math.max(0, (enemy.hp/enemy.maxHp)*100)}%`;
+      el.eatk.textContent = enemy.atk; el.edef.textContent = enemy.def;
+      el.easpd.textContent = `${fmt(enemy.aspd)} /s`; el.erew.textContent  = `${Math.round(enemy.reward * goldMul())} 골드`;
+    }else{
+      el.ehpLabel.textContent = `-/-`; el.ehpBar.style.width = `0%`;
+      el.eatk.textContent = '-'; el.edef.textContent = '-'; el.easpd.textContent = '-'; el.erew.textContent  = '-';
+    }
+    el.phpBar.style.width = `${Math.max(0, (player.hp/player.maxHp)*100)}%`;
+
+    // 업그레이드 버튼
+    el.upATK.textContent  = `공격력 업 (${costOf('atk')} G)`;
+    el.upDEF.textContent  = `방어력 업 (${costOf('def')} G)`;
+    el.upASPD.textContent = `공속 업 (${costOf('aspd')} G)`;
+    el.upHP.textContent   = `체력 업 (${costOf('hp')} G)`;
+    el.upMSPD.textContent = `이속 업 (${costOf('mspd')} G)`;
+    el.upGoldMul.textContent = `골드 획득량 +10% (${costOf('goldmul')} G)`;
+    el.goldMulLabel.textContent = `현재 배수 ×${goldMul().toFixed(2)}`;
+
+    el.upATK.disabled  = economy.gold < costOf('atk');
+    el.upDEF.disabled  = economy.gold < costOf('def');
+    el.upASPD.disabled = economy.gold < costOf('aspd') || player.aspd >= CAPS.ASPD - 1e-9;
+    el.upHP.disabled   = economy.gold < costOf('hp');
+    el.upMSPD.disabled = economy.gold < costOf('mspd') || player.moveSpeed >= CAPS.MSPD - 1e-9;
+    el.upGoldMul.disabled = economy.gold < costOf('goldmul');
+
+    el.pauseBtn.textContent = state.paused ? '계속(P)' : '일시정지(P)';
+    el.rebirthBtn.disabled = !(prog.stage >= 10 && !state.inCombat && !state.dead);
+
+    el.bossToggle.checked = prog.bossEnabled;
+  }
+
+  // ---- Upgrades ----
+  el.upATK.onclick = ()=> tryBuy('atk', ()=>{ player.atk += 3; });
+  el.upDEF.onclick = ()=> tryBuy('def', ()=>{ player.def += 2; });
+  el.upASPD.onclick= ()=> tryBuy('aspd',()=>{ player.aspd = Math.min(CAPS.ASPD, player.aspd + 0.20); });
+  el.upHP.onclick  = ()=> tryBuy('hp',  ()=>{ const oldMax=player.maxHp; player.maxHp += 15; const gain=player.maxHp-oldMax; player.hp = Math.min(player.hp + gain, player.maxHp); });
+  el.upMSPD.onclick= ()=> tryBuy('mspd',()=>{ player.moveSpeed = Math.min(CAPS.MSPD, player.moveSpeed + 15); });
+  el.upGoldMul.onclick = ()=> {
+    const key='goldmul'; const lv=economy.level[key];
+    // 골드 업글은 1.15의 비용 성장(요청사항)
+    const cost = Math.floor(baseCost[key]*Math.pow(1.15, lv-1));
+    if(economy.gold >= cost){
+      economy.gold -= cost; economy.level[key] = lv+1;
+      flash('골드 획득량 +10%'); syncUI(); saveAuto();
+    }
+  };
+  function tryBuy(key, apply){
+    const c = costOf(key);
+    if(economy.gold >= c){ economy.gold -= c; economy.level[key]++; apply(); syncUI(); saveAuto(); }
+  }
+
+  // ---- Save / Load ----
+  function packSave(){ return JSON.stringify({ economy, prog, playerBase: basePlayer }); }
+  function applySave(obj){
+    if(!obj) return;
+    if(obj.economy){ economy.gold = obj.economy.gold ?? economy.gold; economy.level = obj.economy.level ?? economy.level; }
+    if(obj.prog){
+      prog.stage = obj.prog.stage ?? prog.stage;
+      prog.killsThisStage = obj.prog.killsThisStage ?? prog.killsThisStage;
+      prog.rebirths = obj.prog.rebirths ?? prog.rebirths;
+      prog.bossEnabled = (obj.prog.bossEnabled ?? prog.bossEnabled);
+    }
+    if(obj.playerBase){ Object.assign(basePlayer, obj.playerBase); }
+    applyBaseToPlayer();      // 레이어2 버프
+    applyLevelUpgrades();     // 레벨 반영
+    player.x = 40; state.cameraX=0; state.inCombat=false; state.dead=false;
+    enemy = null; state.needSpawn = true; state.spawnCooldown = 0.5;
+    syncUI();
+  }
+  function saveAuto(){ localStorage.setItem('idleRunnerSave_v3', packSave()); }
+  function saveManual(){ saveAuto(); flash('저장 완료'); }
+  function loadManual(){
+    const raw = localStorage.getItem('idleRunnerSave_v3') || localStorage.getItem('idleRunnerSave_v2') || localStorage.getItem('idleRunnerSave');
+    if(raw){ try{ applySave(JSON.parse(raw)); flash('불러오기 완료'); }catch{} }
+  }
+  function resetAll(){
+    localStorage.removeItem('idleRunnerSave_v3');
+    localStorage.removeItem('idleRunnerSave_v2');
+    localStorage.removeItem('idleRunnerSave');
+    economy.gold=0; economy.level={atk:1,def:1,aspd:1,hp:1,mspd:1,goldmul:1};
+    prog.stage=1; prog.killsThisStage=0; prog.rebirths=0; prog.bossEnabled=true;
+    applyBaseToPlayer(); player.x=40; state.cameraX=0; state.inCombat=false; state.dead=false;
+    enemy=null; state.needSpawn=true; state.spawnCooldown=0.5;
+    syncUI(); flash('리셋됨');
+  }
+
+  // ---- Rebirth (Layer2) ----
+  function doRebirth(){
+    if(prog.stage < 10 || state.inCombat || state.dead) return;
+    prog.rebirths += 1; // x2 버프 누적
+    economy.gold = 0; economy.level={atk:1,def:1,aspd:1,hp:1,mspd:1,goldmul:1};
+    applyBaseToPlayer();
+    player.x = 40; player.hp = player.maxHp;
+    prog.stage = 1; prog.killsThisStage = 0;
+    enemy = null; state.needSpawn = true; state.spawnCooldown = 0.6;
+    flash('환생 완료: 공격력·체력 +100% (영구)');
+    syncUI(); saveAuto();
+  }
+
+  // ---- UI wiring ----
+  el.pauseBtn.onclick = ()=>{ state.paused = !state.paused; syncUI(); };
+  el.saveBtn.onclick = saveManual;
+  el.loadBtn.onclick = loadManual;
+  el.resetBtn.onclick = resetAll;
+  el.rebirthBtn.onclick = doRebirth;
+  el.debugGoldBtn.onclick = ()=>{ economy.gold += 10000; syncUI(); saveAuto(); flash('+10,000 골드'); };
+  el.bossToggle.onchange = (e)=>{ prog.bossEnabled = e.target.checked; saveAuto(); flash(`보스 ${prog.bossEnabled?'ON':'OFF'}`); };
+  el.enemyCrawlToggle.onchange = ()=>{ flash(el.enemyCrawlToggle.checked ? '적 접근: 느리게 ON' : '적 접근: 정지'); };
+  el.panelToggle.onclick = ()=>{
+    const p = document.querySelector('.panel');
+    if(p.style.display==='none'){ p.style.display='block'; } else { p.style.display='none'; }
+  };
+
+  window.addEventListener('keydown', (e)=>{
+    if(e.key==='p' || e.key==='P'){ state.paused = !state.paused; syncUI(); }
+    if(e.key==='s' || e.key==='S'){ saveManual(); }
+    if(e.key==='l' || e.key==='L'){ loadManual(); }
+  });
+  // 클릭하면 즉시 부활
+  cv.addEventListener('click', ()=>{ if(state.dead){ respawnNow(); }});
+
+  // ---- Toast ----
+  let toastTimer=0, toastMsg='';
+  function flash(msg){ toastMsg=msg; toastTimer=1.8; }
+
+  // ---- Helpers ----
+  function rectsOverlap(a,b){ return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y; }
+  function damageCalc(atk, def){ return Math.max(1, atk - def); }
+
+  // ---- Spawning / Respawn ----
+  function requestSpawn(){ state.spawnCooldown = randBetween(0.8, 1.6); state.needSpawn = true; }
+  function respawnNow(){
+    if(!state.dead) return;
+    state.dead=false; player.hp=player.maxHp;
+    enemy=null; requestSpawn(); flash('부활!');
+  }
+
+  // ---- Main Loop ----
+  function tick(ts){
+    const dt = Math.min(0.033, (ts - state.lastTime)/1000); state.lastTime = ts;
+    if(!state.paused){ update(dt, ts); draw(ts); } else { draw(ts); }
+    requestAnimationFrame(tick);
+  }
+
+  function update(dt, ts){
+    // 사망 상태
+    if(state.dead){
+      if(ts >= state.respawnAt){ respawnNow(); }
+      syncUI(); return;
+    }
+
+    // 스폰 타이머
+    if(!enemy && !state.inCombat){
+      state.spawnCooldown -= dt;
+      if(state.spawnCooldown <= 0){
+        if(prog.killsThisStage >= 10 && prog.bossEnabled){ state.nextIsBoss = true; }
+        enemy = makeEnemy(state.nextIsBoss);
+        state.nextIsBoss = false; state.needSpawn = false;
+      }
+    }
+
+    // 이동 + (버그 수정) 적 접근 0. 기본은 정지, 디버그 ON이면 아주 느리게만 접근.
+    if(!state.inCombat){
+      player.x += player.moveSpeed * dt;
+      // 디버그 토글이 켜졌을 때만 아주 느리게 접근
+      if(enemy && el.enemyCrawlToggle.checked){
+        const factor = 0.15; // 플레이어 이속의 15% 속도로만 이동
+        enemy.x -= (player.moveSpeed * factor) * dt;
+      }
+      // 카메라
+      const targetCam = player.x - 200; state.cameraX += (targetCam - state.cameraX) * 0.1;
+
+      // 충돌 → 전투
+      if(enemy && rectsOverlap(player, enemy)){
+        player.x = enemy.x - player.w; state.inCombat = true;
+        player.nextAtk = ts + 120; enemy.nextAtk = ts + 220;
+      }
+    }else{
+      // 전투
+      if(ts >= player.nextAtk){ enemy.hp -= damageCalc(player.atk, enemy.def); player.nextAtk = ts + (1000 / player.aspd); }
+      if(ts >= enemy.nextAtk){ player.hp -= damageCalc(enemy.atk, player.def); enemy.nextAtk = ts + (1000 / enemy.aspd); }
+
+      // 판정
+      if(enemy.hp <= 0){
+        const wasBoss = enemy.isBoss;
+        const drop = Math.round(enemy.reward * goldMul());
+        economy.gold += drop;
+        enemy = null; state.inCombat = false;
+
+        if(wasBoss){
+          // 보스 클리어 → 다음 스테이지, HP 풀회복
+          prog.stage += 1; prog.killsThisStage = 0; player.hp = player.maxHp;
+          flash(`보스 격파! 스테이지 ${prog.stage}`);
+        }else{
+          prog.killsThisStage += 1;
+          if(prog.killsThisStage >= 10 && prog.bossEnabled){ flash('보스가 다가오는 중!'); }
+          if(prog.killsThisStage >= 10 && !prog.bossEnabled){ prog.killsThisStage = 0; }
+        }
+        requestSpawn();
+      }else if(player.hp <= 0){
+        // 사망 처리: 일반몹은 제자리 부활, 보스는 시작 지점
+        const fightingBoss = enemy.isBoss;
+        player.hp = 0; state.inCombat = false; state.dead = true; state.respawnAt = ts + RESPAWN_MS;
+        prog.killsThisStage = 0;
+        enemy = fightingBoss ? null : enemy; // 일반몹이면 전투 유지(제자리 부활)
+        if(fightingBoss){ player.x = 40; state.cameraX = 0; }
+        flash(fightingBoss ? '보스에게 사망! 3초 후 시작 지점에서 부활' : '사망! 3초 후 제자리 부활 (클릭 시 즉시)');
+      }
+    }
+
+    syncUI();
+    if(toastTimer > 0) toastTimer -= dt;
+  }
+
+  function draw(ts){
+    const cam = state.cameraX;
+    ctx.clearRect(0,0,cv.width,cv.height);
+    const groundY = 430;
+    ctx.fillStyle = '#0b0f14'; ctx.fillRect(0, groundY, cv.width, cv.height-groundY);
+    ctx.strokeStyle = '#1f2733'; ctx.lineWidth = 2;
+    for(let i=0;i<6;i++){ const y = groundY - 6 - i*18; ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(cv.width, y); ctx.stroke(); }
+    ctx.fillStyle = '#1a2130';
+    for(let gx = -((cam%80)+80); gx < cv.width; gx += 80){ ctx.fillRect(gx, groundY-180, 2, 160); }
+
+    if(enemy){
+      ctx.fillStyle = enemy.color; ctx.fillRect(Math.floor(enemy.x - cam), enemy.y, enemy.w, enemy.h);
+      ctx.fillStyle = enemy.isBoss ? '#ffd2e0' : '#ffd2a1'; ctx.font = '12px ui-monospace, monospace';
+      const label = (enemy.isBoss?'BOSS ':'E ') + `HP:${Math.max(0,Math.ceil(enemy.hp))}`;
+      ctx.fillText(label, Math.floor(enemy.x - cam)-6, enemy.y-6);
+    }
+
+    ctx.fillStyle = player.color; ctx.fillRect(Math.floor(player.x - cam), player.y, player.w, player.h);
+    ctx.fillStyle = '#c7e7ff'; ctx.font = '12px ui-monospace, monospace';
+    ctx.fillText(`P HP:${Math.max(0,Math.ceil(player.hp))}`, Math.floor(player.x - cam)-4, player.y-6);
+
+    if(state.inCombat && enemy){
+      const t = (ts/120)%1; ctx.strokeStyle = enemy.isBoss ? (t<0.5 ? '#ff6ea3' : '#ffd1e6') : (t<0.5 ? '#ff9a9a' : '#a0d3ff');
+      ctx.lineWidth = 3; ctx.beginPath();
+      const px = Math.floor(player.x - cam) + player.w; const ex = Math.floor(enemy.x - cam); const y = player.y + player.h/2;
+      ctx.moveTo(px, y); ctx.lineTo(ex, y); ctx.stroke();
+    }
+
+    // 사망 오버레이
+    if(state.dead){
+      const remain = Math.max(0, (state.respawnAt - ts)/1000);
+      ctx.globalAlpha = 0.75; ctx.fillStyle = '#000'; ctx.fillRect(0,0,cv.width,cv.height); ctx.globalAlpha = 1;
+      ctx.fillStyle = '#fff'; ctx.font = '16px system-ui, sans-serif';
+      const msg = `사망! ${remain.toFixed(1)}초 후 부활 (클릭 시 즉시)`; const tw = ctx.measureText(msg).width;
+      ctx.fillText(msg, (cv.width - tw)/2, 80);
+    }
+
+    // 토스트
+    if(toastTimer > 0){
+      const a = Math.min(1, toastTimer / 0.3, (1.8 - toastTimer) / 0.3);
+      ctx.globalAlpha = a; ctx.fillStyle = '#111826cc';
+      const w = 320, h = 40; ctx.fillRect((cv.width - w)/2, 30, w, h);
+      ctx.globalAlpha = a; ctx.fillStyle = '#e8f1ff'; ctx.font = '14px system-ui, sans-serif';
+      ctx.fillText(toastMsg, (cv.width - w)/2 + 14, 30+25); ctx.globalAlpha = 1;
+    }
+  }
+
+  // ---- init ----
+  function init(){
+    loadManual(); // 저장이 있으면 불러오기
+    applyLevelUpgrades(); // 방어적 재적용
+    // UI 토글 초기화
+    el.bossToggle.checked = prog.bossEnabled;
+    // 초기 스폰 예약
+    requestSpawn();
+    syncUI();
+    requestAnimationFrame(tick);
+  }
+  init();
+})();
+</script>
+</body>
+</html>
