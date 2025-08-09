@@ -34,7 +34,6 @@
   .switch input {accent-color:#5ec8ff; width:16px; height:16px;}
   .hudline{display:flex; align-items:center; justify-content:space-between; gap:8px; margin:6px 0;}
   .pill{font-size:11px; padding:2px 8px; border:1px solid #2a3240; border-radius:999px; color:#cfe8ff; background:#192131;}
-  .debug{background:#3a2b1c; color:#ffe0b0; border:1px solid #5a4022;}
   /* 모바일/좁은 화면: 위(전투) 60vh, 아래(패널) 40vh */
   @media (max-width: 900px) {
     .wrap{flex-direction:column;}
@@ -62,7 +61,6 @@
     <div class="row" style="margin-top:6px">
       <label class="switch"><input type="checkbox" id="bossToggle" checked> 보스 등장</label>
       <label class="switch"><input type="checkbox" id="enemyCrawlToggle"> 적 미세 접근(디버그)</label>
-      <button id="debugGoldBtn" class="debug" title="디버그: +10,000 골드">+10k 골드</button>
     </div>
     <div class="fine">적은 화면 밖 오른쪽에서 생성됩니다. 조우 시 정지 후 한쪽이 쓰러질 때까지 전투합니다.</div>
 
@@ -118,7 +116,6 @@
 
   // ---- Config / Caps ----
   const CAPS = { ASPD: 2.0, MSPD: 250 }; // 레이어1 캡
-  const ENEMY_APPROACH_FACTOR = 0; // 기본 0(정지). 디버그 토글 시 0.15 배 등으로 적용
   const RESPAWN_MS = 3000;
 
   // ---- Game State ----
@@ -142,7 +139,7 @@
   const economy = { gold:0, level:{ atk:1, def:1, aspd:1, hp:1, mspd:1, goldmul:1 } };
   const baseCost = { atk:20, def:20, aspd:30, hp:25, mspd:25, goldmul:50 };
   function costOf(key){ const lv=economy.level[key]; return Math.floor(baseCost[key]*Math.pow(1.35, lv-1)); }
-  function goldMul(){ return Math.pow(1.10, (economy.level.goldmul||1)-1); } // +10% 씩 누적
+  function goldMul(){ return Math.pow(1.10, (economy.level.goldmul||1)-1); } // +10%씩 누적
 
   // ---- Enemy scaling (완화 버전) ----
   function randBetween(a,b){ return a + Math.random()*(b-a); }
@@ -152,6 +149,10 @@
     const r = Math.pow(1 + 0.15*stage, 1.04);
     return {stat:s, reward:r};
   }
+
+  // enemy shapes & traits
+  const SHAPES = ['square','triangle','circle']; // 네모=방어↑, 세모=공격↑, 동그라미=체력↑
+
   function makeEnemy(isBoss=false){
     const sc = stageScale(prog.stage), b = prog.stage;
     const baseHp = 28 + b*8.5 * sc.stat;
@@ -159,16 +160,35 @@
     const baseDef = 1  + Math.floor(b*0.5 * sc.stat);
     const baseAspd = 1.0 + Math.min(1.5, b*0.05);
     const baseReward = (6 + b*3.0) * sc.reward;
+
+    // 타입 선택
+    let shape = isBoss ? 'square' : SHAPES[Math.floor(Math.random()*SHAPES.length)];
+    let hp = baseHp, atk = baseAtk, def = baseDef, aspd = baseAspd, reward = baseReward;
+    if(shape === 'triangle'){ atk *= 1.2; }       // 공격↑
+    if(shape === 'square'){   def = Math.round(def*1.5 + 1); } // 방어↑
+    if(shape === 'circle'){   hp *= 1.25; }       // 체력↑
+
     const bossMul = isBoss ? 2.4 : 1.0;
-    const hp = Math.round(baseHp * bossMul);
-    const atk = Math.round(baseAtk * bossMul);
-    const def = Math.round(baseDef * (isBoss? 1.7:1.0));
-    const aspd = +(baseAspd * (isBoss? 1.1:1.0)).toFixed(2);
-    const reward = Math.round(baseReward * (isBoss? 3.0:1.0));
+    hp = Math.round(hp * bossMul);
+    atk = Math.round(atk * bossMul);
+    def = Math.round(def * (isBoss? 1.7:1.0));
+    aspd = +(aspd * (isBoss? 1.1:1.0)).toFixed(2);
+    reward = Math.round(reward * (isBoss? 3.0:1.0));
+
     const spawnGap = isBoss ? randBetween(900,1100) : randBetween(700,950);
-    return { x: player.x + spawnGap, y:390, w:isBoss?44:30, h:isBoss?52:38,
-      color: isBoss? '#ff3c75' : '#ff6b6b',
-      atk, def, aspd, maxHp:hp, hp, nextAtk:0, reward, isBoss };
+    return {
+      x: player.x + spawnGap,
+      y: 390,
+      w: isBoss ? 52 : 30,
+      h: isBoss ? 60 : 38,
+      color: isBoss ? '#ff2d55' : (shape==='triangle' ? '#ff7a66' : shape==='square' ? '#ff6b6b' : '#ff9966'),
+      atk, def, aspd,
+      maxHp: hp, hp,
+      nextAtk: 0,
+      reward,
+      isBoss,
+      shape
+    }
   }
   let enemy = null;
 
@@ -206,7 +226,6 @@
     rebirthBtn:$('rebirthBtn'),
     bossToggle:$('bossToggle'), enemyCrawlToggle:$('enemyCrawlToggle'),
     panelToggle:$('panelToggle'),
-    debugGoldBtn:$('debugGoldBtn')
   };
   function fmt(n){ return Number.isInteger(n)? n : n.toFixed(2); }
 
@@ -265,8 +284,7 @@
   el.upMSPD.onclick= ()=> tryBuy('mspd',()=>{ player.moveSpeed = Math.min(CAPS.MSPD, player.moveSpeed + 15); });
   el.upGoldMul.onclick = ()=> {
     const key='goldmul'; const lv=economy.level[key];
-    // 골드 업글은 1.15의 비용 성장(요청사항)
-    const cost = Math.floor(baseCost[key]*Math.pow(1.15, lv-1));
+    const cost = Math.floor(baseCost[key]*Math.pow(1.15, lv-1)); // 1.15배 가격 증가
     if(economy.gold >= cost){
       economy.gold -= cost; economy.level[key] = lv+1;
       flash('골드 획득량 +10%'); syncUI(); saveAuto();
@@ -326,12 +344,11 @@
   }
 
   // ---- UI wiring ----
-  el.pauseBtn.onclick = ()=>{ state.paused = !state.paused; syncUI(); };
-  el.saveBtn.onclick = saveManual;
-  el.loadBtn.onclick = loadManual;
-  el.resetBtn.onclick = resetAll;
-  el.rebirthBtn.onclick = doRebirth;
-  el.debugGoldBtn.onclick = ()=>{ economy.gold += 10000; syncUI(); saveAuto(); flash('+10,000 골드'); };
+  $('pauseBtn').onclick = ()=>{ state.paused = !state.paused; syncUI(); };
+  $('saveBtn').onclick = saveManual;
+  $('loadBtn').onclick = loadManual;
+  $('resetBtn').onclick = resetAll;
+  $('rebirthBtn').onclick = doRebirth;
   el.bossToggle.onchange = (e)=>{ prog.bossEnabled = e.target.checked; saveAuto(); flash(`보스 ${prog.bossEnabled?'ON':'OFF'}`); };
   el.enemyCrawlToggle.onchange = ()=>{ flash(el.enemyCrawlToggle.checked ? '적 접근: 느리게 ON' : '적 접근: 정지'); };
   el.panelToggle.onclick = ()=>{
@@ -355,6 +372,24 @@
   function rectsOverlap(a,b){ return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y; }
   function damageCalc(atk, def){ return Math.max(1, atk - def); }
 
+  // ---- Explosion Effects ----
+  const explosions = [];
+  function spawnExplosion(x, y, color){
+    const N = 20 + Math.floor(Math.random()*10);
+    for(let i=0;i<N;i++){
+      const ang = Math.random()*Math.PI*2;
+      const spd = 60 + Math.random()*140;
+      explosions.push({
+        x, y,
+        vx: Math.cos(ang)*spd,
+        vy: Math.sin(ang)*spd,
+        life: 0.5 + Math.random()*0.4, // seconds
+        r: 3 + Math.random()*3,
+        color
+      });
+    }
+  }
+
   // ---- Spawning / Respawn ----
   function requestSpawn(){ state.spawnCooldown = randBetween(0.8, 1.6); state.needSpawn = true; }
   function respawnNow(){
@@ -374,6 +409,11 @@
     // 사망 상태
     if(state.dead){
       if(ts >= state.respawnAt){ respawnNow(); }
+      // 폭발 업데이트
+      for(let i=explosions.length-1;i>=0;i--){
+        const p = explosions[i]; p.life -= dt; p.x += p.vx*dt; p.y += p.vy*dt; p.vy += 300*dt;
+        if(p.life<=0) explosions.splice(i,1);
+      }
       syncUI(); return;
     }
 
@@ -387,14 +427,16 @@
       }
     }
 
-    // 이동 + (버그 수정) 적 접근 0. 기본은 정지, 디버그 ON이면 아주 느리게만 접근.
+    // 이동
     if(!state.inCombat){
       player.x += player.moveSpeed * dt;
-      // 디버그 토글이 켜졌을 때만 아주 느리게 접근
+
+      // 디버그 토글이 켜졌을 때만 아주 느리게 접근 (기본은 접근 0)
       if(enemy && el.enemyCrawlToggle.checked){
         const factor = 0.15; // 플레이어 이속의 15% 속도로만 이동
         enemy.x -= (player.moveSpeed * factor) * dt;
       }
+
       // 카메라
       const targetCam = player.x - 200; state.cameraX += (targetCam - state.cameraX) * 0.1;
 
@@ -413,6 +455,10 @@
         const wasBoss = enemy.isBoss;
         const drop = Math.round(enemy.reward * goldMul());
         economy.gold += drop;
+
+        // 적 사망 이펙트
+        spawnExplosion(enemy.x + enemy.w/2, enemy.y + enemy.h/2, enemy.color);
+
         enemy = null; state.inCombat = false;
 
         if(wasBoss){
@@ -426,14 +472,24 @@
         }
         requestSpawn();
       }else if(player.hp <= 0){
-        // 사망 처리: 일반몹은 제자리 부활, 보스는 시작 지점
+        // 사망 처리: 일반몹이면 제자리, 보스면 시작지점
         const fightingBoss = enemy.isBoss;
+
+        // 플레이어 사망 이펙트(색상은 플레이어 색)
+        spawnExplosion(player.x + player.w/2, player.y + player.h/2, '#5ec8ff');
+
         player.hp = 0; state.inCombat = false; state.dead = true; state.respawnAt = ts + RESPAWN_MS;
         prog.killsThisStage = 0;
         enemy = fightingBoss ? null : enemy; // 일반몹이면 전투 유지(제자리 부활)
         if(fightingBoss){ player.x = 40; state.cameraX = 0; }
         flash(fightingBoss ? '보스에게 사망! 3초 후 시작 지점에서 부활' : '사망! 3초 후 제자리 부활 (클릭 시 즉시)');
       }
+    }
+
+    // 폭발 업데이트
+    for(let i=explosions.length-1;i>=0;i--){
+      const p = explosions[i]; p.life -= dt; p.x += p.vx*dt; p.y += p.vy*dt; p.vy += 300*dt;
+      if(p.life<=0) explosions.splice(i,1);
     }
 
     syncUI();
@@ -450,22 +506,66 @@
     ctx.fillStyle = '#1a2130';
     for(let gx = -((cam%80)+80); gx < cv.width; gx += 80){ ctx.fillRect(gx, groundY-180, 2, 160); }
 
+    // 적 (모양별로 그림)
     if(enemy){
-      ctx.fillStyle = enemy.color; ctx.fillRect(Math.floor(enemy.x - cam), enemy.y, enemy.w, enemy.h);
+      const ex = Math.floor(enemy.x - cam), ey = enemy.y, ew = enemy.w, eh = enemy.h;
+      ctx.fillStyle = enemy.color;
+
+      if(enemy.isBoss){
+        // 보스: 큰 사각형 + 뿔
+        ctx.fillRect(ex, ey, ew, eh);
+        // horns
+        ctx.strokeStyle = '#ffb3c0';
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(ex + ew*0.25, ey); ctx.lineTo(ex + ew*0.15, ey - eh*0.3);
+        ctx.moveTo(ex + ew*0.75, ey); ctx.lineTo(ex + ew*0.85, ey - eh*0.3);
+        ctx.stroke();
+      }else{
+        if(enemy.shape === 'square'){
+          ctx.fillRect(ex, ey, ew, eh);
+        }else if(enemy.shape === 'triangle'){
+          ctx.beginPath();
+          ctx.moveTo(ex + ew/2, ey);           // top
+          ctx.lineTo(ex, ey + eh);             // left
+          ctx.lineTo(ex + ew, ey + eh);        // right
+          ctx.closePath();
+          ctx.fill();
+        }else{ // circle
+          ctx.beginPath();
+          ctx.arc(ex + ew/2, ey + eh/2, Math.min(ew,eh)/2, 0, Math.PI*2);
+          ctx.fill();
+        }
+      }
+
+      // 라벨
       ctx.fillStyle = enemy.isBoss ? '#ffd2e0' : '#ffd2a1'; ctx.font = '12px ui-monospace, monospace';
       const label = (enemy.isBoss?'BOSS ':'E ') + `HP:${Math.max(0,Math.ceil(enemy.hp))}`;
-      ctx.fillText(label, Math.floor(enemy.x - cam)-6, enemy.y-6);
+      ctx.fillText(label, ex-6, ey-6);
     }
 
+    // 플레이어
     ctx.fillStyle = player.color; ctx.fillRect(Math.floor(player.x - cam), player.y, player.w, player.h);
     ctx.fillStyle = '#c7e7ff'; ctx.font = '12px ui-monospace, monospace';
     ctx.fillText(`P HP:${Math.max(0,Math.ceil(player.hp))}`, Math.floor(player.x - cam)-4, player.y-6);
 
+    // 전투 이펙트
     if(state.inCombat && enemy){
       const t = (ts/120)%1; ctx.strokeStyle = enemy.isBoss ? (t<0.5 ? '#ff6ea3' : '#ffd1e6') : (t<0.5 ? '#ff9a9a' : '#a0d3ff');
       ctx.lineWidth = 3; ctx.beginPath();
       const px = Math.floor(player.x - cam) + player.w; const ex = Math.floor(enemy.x - cam); const y = player.y + player.h/2;
       ctx.moveTo(px, y); ctx.lineTo(ex, y); ctx.stroke();
+    }
+
+    // 폭발 파티클
+    for(const p of explosions){
+      const alpha = Math.max(0, Math.min(1, p.life / 0.3));
+      ctx.globalAlpha = alpha;
+      ctx.fillStyle = p.color;
+      ctx.beginPath();
+      ctx.arc(Math.floor(p.x - cam), p.y, p.r, 0, Math.PI*2);
+      ctx.fill();
+      ctx.globalAlpha = 1;
     }
 
     // 사망 오버레이
@@ -491,9 +591,7 @@
   function init(){
     loadManual(); // 저장이 있으면 불러오기
     applyLevelUpgrades(); // 방어적 재적용
-    // UI 토글 초기화
     el.bossToggle.checked = prog.bossEnabled;
-    // 초기 스폰 예약
     requestSpawn();
     syncUI();
     requestAnimationFrame(tick);
